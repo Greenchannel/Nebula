@@ -1,0 +1,277 @@
+name: Nebula Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: nebula-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Shared target dir: nebula-app is a standalone Tauri workspace, but its
+  # artifacts should land next to the core/TUI ones.
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  # =====================================================================
+  # Linux — GUI + TUI
+  # =====================================================================
+  build-linux:
+    name: Linux GUI + TUI
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            libasound2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build nebula-tui
+        run: cargo build --release -p nebula-tui
+
+      - name: Build nebula (Tauri GUI)
+        run: cargo build --release --manifest-path crates/nebula-app/Cargo.toml
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist
+          cp target/release/nebula-tui dist/nebula-linux-tui
+          cp target/release/nebula dist/nebula-linux-gui
+          chmod +x dist/nebula-linux-tui dist/nebula-linux-gui
+
+      - name: Upload Linux TUI
+        uses: actions/upload-artifact@v4
+        with:
+          name: nebula-linux-tui
+          path: dist/nebula-linux-tui
+          if-no-files-found: error
+
+      - name: Upload Linux GUI
+        uses: actions/upload-artifact@v4
+        with:
+          name: nebula-linux-gui
+          path: dist/nebula-linux-gui
+          if-no-files-found: error
+
+  # =====================================================================
+  # Windows — GUI + TUI (MSVC)
+  # =====================================================================
+  build-windows:
+    name: Windows GUI + TUI
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build nebula-tui
+        run: cargo build --release -p nebula-tui
+
+      - name: Build nebula (Tauri GUI)
+        run: cargo build --release --manifest-path crates/nebula-app/Cargo.toml
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/nebula-tui.exe dist/nebula-windows-tui.exe
+          Copy-Item target/release/nebula.exe dist/nebula-windows-gui.exe
+
+      - name: Upload Windows TUI
+        uses: actions/upload-artifact@v4
+        with:
+          name: nebula-windows-tui
+          path: dist/nebula-windows-tui.exe
+          if-no-files-found: error
+
+      - name: Upload Windows GUI
+        uses: actions/upload-artifact@v4
+        with:
+          name: nebula-windows-gui
+          path: dist/nebula-windows-gui.exe
+          if-no-files-found: error
+
+  # =====================================================================
+  # Android — arm64 signed APK
+  # =====================================================================
+  build-android:
+    name: Android arm64 signed APK
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platforms, build-tools and NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;27.0.12077973"
+
+      - name: Export NDK environment
+        run: |
+          NDK_DIR="${ANDROID_HOME}/ndk/27.0.12077973"
+          echo "ANDROID_NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=${NDK_DIR}" >> "$GITHUB_ENV"
+          echo "NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
+
+      - name: Install Rust Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2.0.0" --locked
+
+      - name: Initialize Android project (if missing)
+        working-directory: crates/nebula-app
+        env:
+          TAURI_APP_PATH: ${{ github.workspace }}/crates/nebula-app
+        run: |
+          if [ ! -d gen/android ]; then
+            cargo tauri android init --skip-targets-install
+          fi
+
+      - name: Inject permissions and cleartext traffic
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          manifest = Path("crates/nebula-app/gen/android/app/src/main/AndroidManifest.xml")
+          if not manifest.exists():
+              candidates = list(Path("crates/nebula-app/gen/android").rglob("AndroidManifest.xml"))
+              if not candidates:
+                  raise SystemExit("AndroidManifest.xml not found — did `tauri android init` run?")
+              manifest = candidates[0]
+
+          text = manifest.read_text(encoding="utf-8")
+          permissions = [
+              "android.permission.INTERNET",
+              "android.permission.ACCESS_NETWORK_STATE",
+              "android.permission.ACCESS_WIFI_STATE",
+              "android.permission.CHANGE_WIFI_MULTICAST_STATE",
+              "android.permission.RECORD_AUDIO",
+          ]
+          missing = [p for p in permissions if p not in text]
+          if missing:
+              block = "".join(
+                  f'    <uses-permission android:name="{p}" />\n' for p in missing
+              )
+              if "<application" not in text:
+                  raise SystemExit("malformed manifest: no <application> tag")
+              text = text.replace("<application", block + "    <application", 1)
+
+          if "usesCleartextTraffic" not in text:
+              def add_attr(match):
+                  tag = match.group(0)
+                  return tag[:-1] + ' android:usesCleartextTraffic="true">'
+
+              text = re.sub(r"<application\b[^>]*>", add_attr, text, count=1)
+
+          manifest.write_text(text, encoding="utf-8")
+          print(f"Injected permissions into {manifest}")
+          print(manifest.read_text(encoding="utf-8")[:1200])
+          PY
+
+      - name: Build Android APK (arm64)
+        working-directory: crates/nebula-app
+        env:
+          TAURI_APP_PATH: ${{ github.workspace }}/crates/nebula-app
+          TAURI_FRONTEND_PATH: ${{ github.workspace }}/ui
+        run: |
+          cargo tauri android build --apk --target aarch64
+
+      - name: Zipalign then sign (signature order)
+        working-directory: crates/nebula-app
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_SECRET_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_SECRET_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_SECRET_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="${ANDROID_HOME}/build-tools/34.0.0"
+
+          UNSIGNED="$(find gen/android/app/build/outputs/apk -type f -name '*unsigned.apk' | head -n1 || true)"
+          if [ -z "${UNSIGNED}" ]; then
+            echo "::error::No unsigned APK produced"
+            find gen/android/app/build/outputs -maxdepth 6 -type f || true
+            exit 1
+          fi
+          echo "Unsigned APK: ${UNSIGNED}"
+
+          if [ -n "${KS_B64:-}" ]; then
+            printf '%s' "${KS_B64}" | base64 -d > nebula-release.jks
+            KEY_ALIAS="${KEY_SECRET_ALIAS:-nebula}"
+            KS_PASS="${KS_SECRET_PASS}"
+            KEY_PASS="${KEY_SECRET_PASS:-${KS_SECRET_PASS}}"
+          else
+            # Default self-signed release key used when no secrets are configured.
+            keytool -genkeypair -v \
+              -keystore nebula-release.jks \
+              -alias nebula \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass nebula123456 -keypass nebula123456 \
+              -dname "CN=Nebula, OU=Star, O=Nebula, L=LAN, ST=Cloud, C=CN"
+            KEY_ALIAS="nebula"
+            KS_PASS="nebula123456"
+            KEY_PASS="nebula123456"
+          fi
+          export KS_PASS KEY_PASS
+
+          # 1) byte-align FIRST — running zipalign after signing breaks the
+          #    v2/v3 signature block.
+          "${BUILD_TOOLS}/zipalign" -f -v -p 4 "${UNSIGNED}" nebula-aligned.apk
+          # 2) sign the aligned APK
+          "${BUILD_TOOLS}/apksigner" sign \
+            --ks nebula-release.jks \
+            --ks-key-alias "${KEY_ALIAS}" \
+            --ks-pass env:KS_PASS \
+            --key-pass env:KEY_PASS \
+            --out nebula-android-arm64-signed.apk \
+            nebula-aligned.apk
+          # 3) verify (prints v1/v2/v3 scheme status)
+          "${BUILD_TOOLS}/apksigner" verify -v --print-certs nebula-android-arm64-signed.apk
+
+          ls -lh nebula-android-arm64-signed.apk
+
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: nebula-android-arm64-signed.apk
+          path: crates/nebula-app/nebula-android-arm64-signed.apk
+          if-no-files-found: error

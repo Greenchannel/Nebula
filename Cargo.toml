@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nebula-core",
+    "crates/nebula-tui",
+]
+default-members = [
+    "crates/nebula-core",
+    "crates/nebula-tui",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+authors = ["_cute486_"]
+repository = "https://github.com/cute486/nebula"
+
+[workspace.dependencies]
+anyhow = "1"
+base64 = "0.22"
+bytes = "1"
+futures-util = "0.3"
+hex = "0.4"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+if-addrs = "0.13"
+rand = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+socket2 = "0.5"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+axum = { version = "0.8", features = ["ws", "json"] }
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4

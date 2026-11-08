@@ -1,0 +1,33 @@
+[package]
+name = "nebula-app"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+description = "Nebula (星云) cross-platform GUI + TUI host built on Tauri v2"
+
+# Intentionally a standalone Tauri workspace: the root workspace only contains
+# nebula-core + nebula-tui so local tests never resolve the heavy Tauri tree.
+# CI builds this crate with `--manifest-path crates/nebula-app/Cargo.toml`.
+[workspace]
+
+[lib]
+name = "nebula_app"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "nebula"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+nebula-core = { path = "../nebula-core" }
+nebula-tui = { path = "../nebula-tui" }
+tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["full"] }
+url = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation"] }

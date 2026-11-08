@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+  <meta name="theme-color" content="#090d16">
+  <title>Nebula · 星云局域网</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="sim-stage">
+    <div id="sim-sizer">
+      <div id="sim-frame">
+        <!-- ============ SINGLE DOM TREE (all form factors) ============ -->
+        <div id="nebula-app" data-tab="chat" data-mobile-pane="list" data-viewport-sim="auto">
+
+          <!-- ---------- Top bar / dev simulator ---------- -->
+          <header id="topbar">
+            <div class="brand">
+              <div class="brand-orb" aria-hidden="true"><i></i></div>
+              <div class="brand-text">
+                <span class="brand-name">NEBULA</span>
+                <span class="brand-sub">星云</span>
+              </div>
+            </div>
+
+            <div class="net-status" id="net-status" title="WebSocket 实时总线状态">
+              <span class="net-dot"></span>
+              <span class="net-label">连接中…</span>
+            </div>
+
+            <div class="sim-switcher" role="group" aria-label="视口仿真器">
+              <button type="button" data-sim="auto" class="active" title="自适应真实视口">🔄<span>Auto</span></button>
+              <button type="button" data-sim="phone" title="手机 390×844">📱<span>390×844</span></button>
+              <button type="button" data-sim="tablet-portrait" title="平板竖屏 820×1180">📟<span>820×1180</span></button>
+              <button type="button" data-sim="tablet-landscape" title="平板横屏 1180×820">💻<span>1180×820</span></button>
+              <button type="button" data-sim="desktop" title="桌面全宽 1440×900">🖥️<span>Desktop</span></button>
+            </div>
+
+            <button type="button" id="self-chip" class="self-chip" title="编辑身份">
+              <span class="avatar avatar-sm" id="self-avatar">N</span>
+              <span class="self-meta">
+                <strong id="self-name">…</strong>
+                <small id="self-id">…</small>
+              </span>
+            </button>
+          </header>
+
+          <!-- ---------- Left navigation rail ---------- -->
+          <nav id="rail" aria-label="主导航">
+            <button type="button" class="rail-btn active" data-tab="chat" title="星讯">
+              <span class="rail-icon">💬</span><span class="rail-label">星讯</span>
+            </button>
+            <button type="button" class="rail-btn" data-tab="moments" title="星云圈">
+              <span class="rail-icon">🪐</span><span class="rail-label">星云圈</span>
+            </button>
+            <button type="button" class="rail-btn" data-tab="radar" title="节点雷达">
+              <span class="rail-icon">📡</span><span class="rail-label">雷达</span>
+            </button>
+            <button type="button" class="rail-btn" data-tab="me" title="身份">
+              <span class="rail-icon">⚙️</span><span class="rail-label">身份</span>
+            </button>
+            <div class="rail-spacer"></div>
+            <div class="rail-status" id="rail-status" title="在线节点">
+              <span class="net-dot"></span><span id="rail-online">0</span>
+            </div>
+          </nav>
+
+          <!-- ---------- Conversation list ---------- -->
+          <aside id="sidebar" aria-label="会话列表">
+            <div class="sidebar-head">
+              <div class="sidebar-title">
+                <h2>星讯</h2>
+                <span class="badge" id="online-count">0 在线</span>
+              </div>
+              <label class="search-box">
+                <span aria-hidden="true">🔍</span>
+                <input id="search-input" type="search" placeholder="搜索历史消息…" autocomplete="off">
+              </label>
+            </div>
+            <div id="search-results" class="search-results hidden"></div>
+            <div id="conversation-list" class="conv-list" role="list"></div>
+            <div class="sidebar-foot">
+              <button type="button" id="new-chat-btn" class="ghost-wide">＋ 发起私聊</button>
+            </div>
+          </aside>
+
+          <!-- ---------- Main viewport ---------- -->
+          <main id="main">
+            <!-- Chat -->
+            <section id="view-chat" class="view" aria-label="聊天">
+              <header class="chat-head">
+                <button type="button" id="back-btn" class="icon-btn back-btn" aria-label="返回会话列表">←</button>
+                <div class="chat-peer">
+                  <span class="avatar" id="chat-avatar">🌐</span>
+                  <div class="chat-peer-meta">
+                    <h3 id="chat-title">星云大厅</h3>
+                    <p id="chat-subtitle">Nebula Lobby · 局域网公共频道</p>
+                  </div>
+                </div>
+                <div class="chat-actions">
+                  <button type="button" id="chat-search-btn" class="icon-btn" title="搜索消息">🔍</button>
+                  <button type="button" id="inspector-btn" class="icon-btn" title="节点与媒体">ℹ️</button>
+                </div>
+              </header>
+
+              <div id="messages" class="messages" aria-live="polite">
+                <div class="empty-state">
+                  <div class="empty-orb"></div>
+                  <h4>信号已就绪</h4>
+                  <p>在同一个局域网内打开另一个 Nebula 节点，即可自动发现彼此。</p>
+                </div>
+              </div>
+
+              <div class="composer" id="composer">
+                <button type="button" id="attach-btn" class="icon-btn" title="图片 / 语音">📎</button>
+                <button type="button" id="voice-btn" class="icon-btn voice-btn" title="按住录音，松开发送">🎙️</button>
+                <textarea id="message-input" rows="1" placeholder="向星云广播…（Enter 发送 / Shift+Enter 换行）"></textarea>
+                <button type="button" id="send-btn" class="send-btn">发送</button>
+                <input type="file" id="file-input" accept="image/*,audio/*" multiple hidden>
+                <input type="file" id="voice-file-input" accept="audio/*" hidden>
+              </div>
+
+              <div id="drag-hint" class="drag-hint hidden"><div>释放以发送到当前会话</div></div>
+            </section>
+
+            <!-- Moments -->
+            <section id="view-moments" class="view hidden" aria-label="星云圈">
+              <header class="view-head">
+                <div>
+                  <h2>星云圈 <span class="glow-word">Moments</span></h2>
+                  <p>去中心化动态 · Append-Only 事件日志 · 版本向量 Gossip 传染</p>
+                </div>
+                <button type="button" id="new-moment-btn" class="primary-btn">✍️ 发布动态</button>
+              </header>
+              <div id="moments-feed" class="moments-feed"></div>
+            </section>
+
+            <!-- Radar -->
+            <section id="view-radar" class="view hidden" aria-label="节点雷达">
+              <header class="view-head">
+                <div>
+                  <h2>节点雷达 <span class="glow-word">Radar</span></h2>
+                  <p id="radar-sub">UDP 48600–48609 端口池扫描中…</p>
+                </div>
+              </header>
+              <div class="radar-scope" aria-hidden="true">
+                <div class="scope-ring r1"></div>
+                <div class="scope-ring r2"></div>
+                <div class="scope-ring r3"></div>
+                <div class="scope-sweep"></div>
+                <div class="scope-core"></div>
+              </div>
+              <div id="peer-list" class="peer-grid"></div>
+            </section>
+
+            <!-- Me / profile -->
+            <section id="view-me" class="view hidden" aria-label="身份">
+              <header class="view-head">
+                <div>
+                  <h2>我的身份 <span class="glow-word">Identity</span></h2>
+                  <p>PeerID 与 IP 解耦：换网络、换 DHCP 地址都不会丢失好友与会话。</p>
+                </div>
+              </header>
+              <div class="me-grid">
+                <div class="glass-card profile-card">
+                  <div class="profile-top">
+                    <span class="avatar avatar-xl" id="me-avatar">N</span>
+                    <div class="profile-fields">
+                      <label class="field-label" for="me-name">昵称</label>
+                      <input id="me-name" class="text-input" maxlength="32" autocomplete="off">
+                      <label class="field-label" for="me-bio">签名</label>
+                      <input id="me-bio" class="text-input" maxlength="120" autocomplete="off">
+                      <button type="button" id="save-profile-btn" class="primary-btn">保存并广播 ANNOUNCE</button>
+                    </div>
+                  </div>
+                  <div class="kv-grid">
+                    <div class="kv"><span>PeerID</span><code id="me-peer-id">…</code></div>
+                    <div class="kv"><span>P2P 端口</span><code id="me-p2p-port">…</code></div>
+                    <div class="kv"><span>UI 端口</span><code id="me-ui-port">…</code></div>
+                    <div class="kv"><span>数据目录</span><code id="me-data-dir">…</code></div>
+                  </div>
+                </div>
+
+                <div class="glass-card telemetry-card">
+                  <h3>节点遥测</h3>
+                  <div class="stat-row">
+                    <div class="stat"><strong id="stat-peers">0</strong><span>在线节点</span></div>
+                    <div class="stat"><strong id="stat-blobs">0</strong><span>CAS 媒体</span></div>
+                    <div class="stat"><strong id="stat-bytes">0 B</strong><span>缓存体积</span></div>
+                    <div class="stat"><strong id="stat-moments">0</strong><span>动态条数</span></div>
+                  </div>
+                  <h3>视口仿真器</h3>
+                  <div class="sim-switcher sim-switcher-block" role="group" aria-label="视口仿真器">
+                    <button type="button" data-sim="auto" class="active">🔄 <span>自适应</span></button>
+                    <button type="button" data-sim="phone">📱 <span>手机</span></button>
+                    <button type="button" data-sim="tablet-portrait">📟 <span>平板竖屏</span></button>
+                    <button type="button" data-sim="tablet-landscape">💻 <span>平板横屏</span></button>
+                    <button type="button" data-sim="desktop">🖥️ <span>桌面</span></button>
+                  </div>
+                  <p class="hint">仿真只改变容器尺寸，不销毁/重建任何 DOM —— 草稿、录音状态与当前会话始终保持。</p>
+                </div>
+              </div>
+            </section>
+          </main>
+
+          <!-- ---------- Right inspector (desktop) / drawer (tablet & phone) ---------- -->
+          <aside id="inspector" aria-label="节点与媒体">
+            <div class="inspector-head">
+              <h3>节点与媒体</h3>
+              <button type="button" id="inspector-close" class="icon-btn" aria-label="关闭">✕</button>
+            </div>
+            <div id="inspector-body" class="inspector-body"></div>
+          </aside>
+
+          <!-- ---------- Mobile bottom navigation ---------- -->
+          <nav id="bottom-nav" aria-label="底部导航">
+            <button type="button" class="bottom-btn active" data-tab="chat">
+              <span class="bottom-icon">💬</span><span>星讯</span>
+              <em id="unread-badge" class="unread-badge hidden">0</em>
+            </button>
+            <button type="button" class="bottom-btn" data-tab="moments">
+              <span class="bottom-icon">🪐</span><span>星云圈</span>
+            </button>
+            <button type="button" class="bottom-btn" data-tab="radar">
+              <span class="bottom-icon">📡</span><span>雷达</span>
+            </button>
+            <button type="button" class="bottom-btn" data-tab="me">
+              <span class="bottom-icon">⚙️</span><span>身份</span>
+            </button>
+          </nav>
+
+          <!-- ---------- Recording overlay ---------- -->
+          <div id="recording-overlay" class="recording-overlay hidden" aria-hidden="true">
+            <div class="recording-card" id="recording-card">
+              <div class="recording-pulse"><span></span></div>
+              <div class="recording-timer" id="recording-timer">00:00</div>
+              <div class="recording-waves" id="recording-waves"></div>
+              <div class="recording-hint" id="recording-hint">松开结束 · 上滑取消</div>
+            </div>
+          </div>
+
+          <!-- ---------- Overlays ---------- -->
+          <div id="drawer-scrim" class="scrim hidden"></div>
+          <div id="modal-root"></div>
+          <div id="toast-host" class="toast-host" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Nebula · 启动中</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body {
+      height: 100%; margin: 0; background: #090d16; color: #e2e8f0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      display: flex; align-items: center; justify-content: center; overflow: hidden;
+    }
+    body::before {
+      content: ""; position: fixed; inset: 0; pointer-events: none;
+      background:
+        radial-gradient(700px 520px at 30% 20%, rgba(99,102,241,.28), transparent 60%),
+        radial-gradient(600px 420px at 75% 80%, rgba(6,182,212,.18), transparent 60%);
+    }
+    .splash {
+      position: relative; text-align: center; padding: 34px 40px;
+      border: 1px solid rgba(148,163,184,.18); border-radius: 24px;
+      background: rgba(15, 23, 42, .72); backdrop-filter: blur(16px);
+      box-shadow: 0 30px 90px rgba(0,0,0,.6);
+      max-width: 86vw;
+    }
+    .orb {
+      width: 84px; height: 84px; border-radius: 50%; margin: 0 auto 18px;
+      background: conic-gradient(from 210deg, #6366f1, #06b6d4, #a855f7, #6366f1);
+      box-shadow: 0 0 40px rgba(99,102,241,.7), inset 0 0 26px rgba(255,255,255,.35);
+      position: relative; animation: spin 6s linear infinite;
+    }
+    .orb::after {
+      content: ""; position: absolute; inset: 26px; border-radius: 50%;
+      background: #090d16; box-shadow: inset 0 0 14px rgba(6,182,212,.8);
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h1 { margin: 0 0 6px; font-size: 19px; letter-spacing: .22em; }
+    p { margin: 0; font-size: 12px; color: #94a3b8; line-height: 1.7; }
+    .dots { margin-top: 16px; display: flex; gap: 6px; justify-content: center; }
+    .dots i {
+      width: 6px; height: 6px; border-radius: 50%; background: #6366f1;
+      animation: blink 1.2s infinite; animation-delay: calc(var(--i) * .18s);
+    }
+    @keyframes blink { 0%, 100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.1); } }
+    #status { margin-top: 14px; font-size: 11px; color: #f59e0b; min-height: 15px; }
+  </style>
+</head>
+<body>
+  <div class="splash">
+    <div class="orb"></div>
+    <h1>NEBULA</h1>
+    <p>星云内核正在唤醒…<br>正在等待本地 P2P 引擎就绪</p>
+    <div class="dots"><i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i></div>
+    <div id="status"></div>
+  </div>
+  <script>
+    (function () {
+      // Android uses a fixed loopback UI port (the app is a single instance).
+      // Desktop navigates directly from Rust; this page is the mobile fallback
+      // and also survives a slow first boot.
+      var BASE = 'http://127.0.0.1:48610';
+      var status = document.getElementById('status');
+      var attempts = 0;
+      function retry() {
+        attempts += 1;
+        fetch(BASE + '/api/local/bootstrap', { cache: 'no-store' })
+          .then(function (res) {
+            if (res.ok) {
+              location.replace(BASE + '/');
+              return;
+            }
+            throw new Error('HTTP ' + res.status);
+          })
+          .catch(function () {
+            if (attempts > 120) {
+              status.textContent = '无法连接本地内核（127.0.0.1:48610）。请尝试重启 Nebula。';
+              return;
+            }
+            setTimeout(retry, 250);
+          });
+      }
+      retry();
+    })();
+  </script>
+</body>
+</html>
