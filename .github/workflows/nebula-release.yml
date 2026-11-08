@@ -202,7 +202,8 @@ jobs:
           # Loopback HTTP to the node must survive Android 9+ cleartext policy.
           # A network security config is authoritative even if a library
           # manifest overrides android:usesCleartextTraffic.
-          xml_dir = manifest.parent.parent / "res" / "xml"
+          # manifest = .../app/src/main/AndroidManifest.xml → res lives next to it
+          xml_dir = manifest.parent / "res" / "xml"
           xml_dir.mkdir(parents=True, exist_ok=True)
           xml_path = xml_dir / "nebula_network_security_config.xml"
           xml_path.write_text(
