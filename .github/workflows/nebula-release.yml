@@ -199,16 +199,54 @@ jobs:
                   raise SystemExit("malformed manifest: no <application> tag")
               text = text.replace("<application", block + "    <application", 1)
 
-          if "usesCleartextTraffic" not in text:
-              def add_attr(match):
-                  tag = match.group(0)
-                  return tag[:-1] + ' android:usesCleartextTraffic="true">'
+          # Loopback HTTP to the node must survive Android 9+ cleartext policy.
+          # A network security config is authoritative even if a library
+          # manifest overrides android:usesCleartextTraffic.
+          xml_dir = manifest.parent.parent / "res" / "xml"
+          xml_dir.mkdir(parents=True, exist_ok=True)
+          xml_path = xml_dir / "nebula_network_security_config.xml"
+          xml_path.write_text(
+              '<?xml version="1.0" encoding="utf-8"?>\n'
+              '<network-security-config>\n'
+              '    <base-config cleartextTrafficPermitted="true">\n'
+              '        <trust-anchors>\n'
+              '            <certificates src="system" />\n'
+              '        </trust-anchors>\n'
+              '    </base-config>\n'
+              '</network-security-config>\n',
+              encoding="utf-8",
+          )
 
-              text = re.sub(r"<application\b[^>]*>", add_attr, text, count=1)
+          match = re.search(r"<application\b[^>]*>", text, re.S)
+          if not match:
+              raise SystemExit("malformed manifest: no <application> tag")
+          tag = match.group(0)
+          new_tag = tag
+          if "android:usesCleartextTraffic" in new_tag:
+              new_tag = re.sub(
+                  r'android:usesCleartextTraffic="[^"]*"',
+                  'android:usesCleartextTraffic="true"',
+                  new_tag,
+              )
+          else:
+              new_tag = new_tag[:-1] + ' android:usesCleartextTraffic="true">'
+          if "android:networkSecurityConfig" in new_tag:
+              new_tag = re.sub(
+                  r'android:networkSecurityConfig="[^"]*"',
+                  'android:networkSecurityConfig="@xml/nebula_network_security_config"',
+                  new_tag,
+              )
+          else:
+              new_tag = (
+                  new_tag[:-1]
+                  + ' android:networkSecurityConfig="@xml/nebula_network_security_config">'
+              )
+          text = text.replace(tag, new_tag, 1)
 
           manifest.write_text(text, encoding="utf-8")
-          print(f"Injected permissions into {manifest}")
-          print(manifest.read_text(encoding="utf-8")[:1200])
+          print(f"Injected permissions + network security config into {manifest}")
+          print(f"Wrote {xml_path}")
+          print(manifest.read_text(encoding="utf-8")[:1400])
           PY
 
       - name: Build Android APK (arm64)

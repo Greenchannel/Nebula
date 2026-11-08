@@ -25,6 +25,7 @@ tauri-build = { version = "2", features = [] }
 anyhow = "1"
 nebula-core = { path = "../nebula-core" }
 nebula-tui = { path = "../nebula-tui" }
+serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
 tokio = { version = "1", features = ["full"] }
 url = "2"

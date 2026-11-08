@@ -18,14 +18,14 @@
         radial-gradient(600px 420px at 75% 80%, rgba(6,182,212,.18), transparent 60%);
     }
     .splash {
-      position: relative; text-align: center; padding: 34px 40px;
+      position: relative; text-align: center; padding: 30px 34px;
       border: 1px solid rgba(148,163,184,.18); border-radius: 24px;
-      background: rgba(15, 23, 42, .72); backdrop-filter: blur(16px);
+      background: rgba(15, 23, 42, .78); backdrop-filter: blur(16px);
       box-shadow: 0 30px 90px rgba(0,0,0,.6);
-      max-width: 86vw;
+      max-width: 88vw; min-width: min(360px, 84vw);
     }
     .orb {
-      width: 84px; height: 84px; border-radius: 50%; margin: 0 auto 18px;
+      width: 84px; height: 84px; border-radius: 50%; margin: 0 auto 16px;
       background: conic-gradient(from 210deg, #6366f1, #06b6d4, #a855f7, #6366f1);
       box-shadow: 0 0 40px rgba(99,102,241,.7), inset 0 0 26px rgba(255,255,255,.35);
       position: relative; animation: spin 6s linear infinite;
@@ -37,50 +37,122 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     h1 { margin: 0 0 6px; font-size: 19px; letter-spacing: .22em; }
     p { margin: 0; font-size: 12px; color: #94a3b8; line-height: 1.7; }
-    .dots { margin-top: 16px; display: flex; gap: 6px; justify-content: center; }
+    .dots { margin-top: 14px; display: flex; gap: 6px; justify-content: center; }
     .dots i {
       width: 6px; height: 6px; border-radius: 50%; background: #6366f1;
       animation: blink 1.2s infinite; animation-delay: calc(var(--i) * .18s);
     }
     @keyframes blink { 0%, 100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.1); } }
-    #status { margin-top: 14px; font-size: 11px; color: #f59e0b; min-height: 15px; }
+    #status { margin-top: 14px; font-size: 11.5px; color: #f59e0b; min-height: 16px; }
+    #status.error { color: #f87171; }
+    #diag {
+      display: none; margin-top: 12px; padding: 9px 11px; text-align: left;
+      font-family: ui-monospace, Consolas, monospace; font-size: 10px; line-height: 1.55;
+      color: #94a3b8; background: rgba(2,6,23,.55); border: 1px solid rgba(148,163,184,.16);
+      border-radius: 9px; white-space: pre-wrap; word-break: break-all;
+      max-height: 140px; overflow: auto;
+    }
+    #actions { display: none; margin-top: 14px; gap: 8px; justify-content: center; flex-wrap: wrap; }
+    #actions.show { display: flex; }
+    button {
+      border: 1px solid rgba(148,163,184,.3); border-radius: 10px;
+      background: rgba(2,6,23,.45); color: #e2e8f0; font: inherit;
+      font-size: 12px; padding: 8px 14px; cursor: pointer;
+    }
+    button.primary {
+      border: 0; color: #fff;
+      background: linear-gradient(135deg, #6366f1, #06b6d4);
+    }
+    button:hover { filter: brightness(1.12); }
   </style>
 </head>
 <body>
   <div class="splash">
     <div class="orb"></div>
     <h1>NEBULA</h1>
-    <p>星云内核正在唤醒…<br>正在等待本地 P2P 引擎就绪</p>
+    <p>星云内核正在唤醒…<br>正在通过原生桥接获取本地 P2P 引擎地址</p>
     <div class="dots"><i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i></div>
-    <div id="status"></div>
+    <div id="status">等待 Tauri 原生桥接…</div>
+    <div id="diag"></div>
+    <div id="actions">
+      <button type="button" id="retry" class="primary">重试</button>
+      <button type="button" id="direct">直接打开 127.0.0.1:48610</button>
+    </div>
   </div>
   <script>
     (function () {
-      // Android uses a fixed loopback UI port (the app is a single instance).
-      // Desktop navigates directly from Rust; this page is the mobile fallback
-      // and also survives a slow first boot.
-      var BASE = 'http://127.0.0.1:48610';
-      var status = document.getElementById('status');
+      'use strict';
+      var statusEl = document.getElementById('status');
+      var diagEl = document.getElementById('diag');
+      var actionsEl = document.getElementById('actions');
+      var retryBtn = document.getElementById('retry');
+      var directBtn = document.getElementById('direct');
       var attempts = 0;
-      function retry() {
-        attempts += 1;
-        fetch(BASE + '/api/local/bootstrap', { cache: 'no-store' })
-          .then(function (res) {
-            if (res.ok) {
-              location.replace(BASE + '/');
-              return;
-            }
-            throw new Error('HTTP ' + res.status);
-          })
-          .catch(function () {
-            if (attempts > 120) {
-              status.textContent = '无法连接本地内核（127.0.0.1:48610）。请尝试重启 Nebula。';
-              return;
-            }
-            setTimeout(retry, 250);
-          });
+      var timer = null;
+
+      function setStatus(text, kind) {
+        statusEl.textContent = text;
+        statusEl.className = kind === 'error' ? 'error' : '';
       }
-      retry();
+      function diag(text) {
+        diagEl.style.display = 'block';
+        diagEl.textContent = text;
+      }
+      function showActions() {
+        actionsEl.classList.add('show');
+      }
+
+      async function probe() {
+        clearTimeout(timer);
+        attempts += 1;
+        var tauri = window.__TAURI__;
+        if (!tauri || !tauri.core || typeof tauri.core.invoke !== 'function') {
+          setStatus('等待 Tauri 原生桥接…');
+          diag('origin=' + location.origin + '\n__TAURI__=' + !!tauri + '\nattempt=' + attempts);
+          if (attempts > 80) {
+            setStatus('原生桥接不可用。可尝试直接打开本地内核。', 'error');
+            showActions();
+            return;
+          }
+          timer = setTimeout(probe, 250);
+          return;
+        }
+        try {
+          var info = await tauri.core.invoke('nebula_info');
+          diag('IPC ok\nstate=' + info.state + '\nurl=' + (info.url || '-') + '\nport=' + (info.port || '-'));
+          if (info.state === 'ready' && info.url) {
+            setStatus('内核已就绪，正在进入 ' + info.url + ' …');
+            setTimeout(function () { location.replace(info.url); }, 120);
+            return;
+          }
+          if (info.state === 'error') {
+            setStatus('内核启动失败', 'error');
+            diag('IPC ok · error\n' + (info.error || 'unknown error'));
+            showActions();
+            return;
+          }
+          setStatus('星云内核启动中…（原生桥接正常）');
+          timer = setTimeout(probe, 300);
+        } catch (err) {
+          setStatus('IPC 调用失败', 'error');
+          diag('origin=' + location.origin + '\ninvoke error: ' + (err && err.message ? err.message : err));
+          if (attempts < 100) timer = setTimeout(probe, 400);
+          else showActions();
+        }
+      }
+
+      retryBtn.addEventListener('click', function () {
+        attempts = 0;
+        setStatus('正在重试…');
+        probe();
+      });
+      directBtn.addEventListener('click', function () {
+        location.replace('http://127.0.0.1:48610/');
+      });
+
+      // Show manual fallbacks even if the hidden window is shown early.
+      setTimeout(showActions, 12000);
+      probe();
     })();
   </script>
 </body>

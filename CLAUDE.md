@@ -34,10 +34,13 @@ ui/dist/                       # 零构建依赖的单页前端，由 core inclu
   * 两者共用同一个 `Router`，所以桌面 WebView、Android WebView、浏览器、TUI
     看到的 API/静态资源完全一致，且页面与 API **同源**。
 * `PeerID` 首次启动随机生成 16 位 hex 并持久化在 `identity` 表，与 IP 完全解耦。
-* Tauri 窗口先以隐藏状态加载内置 `launcher.html`；`setup` 内启动节点后
-  `navigate` 到真实 `http://127.0.0.1:<ui_port>` 再显示（端口可为 0，动态分配）。
-  Android 固定 UI 端口 48610：即使某些 WebView 版本上 `navigate` 不生效，
-  launcher 也会轮询内核就绪后自动跳转。
+* Tauri 窗口先以隐藏状态加载内置 `launcher.html`；`setup` 内启动节点后，
+  通过 Tauri IPC 命令 `nebula_info` 把真实 `http://127.0.0.1:<ui_port>` 交给
+  launcher，再做顶层跳转（桌面端同时由 Rust 调用 `navigate`）。这样不依赖
+  WebView 跨源 `fetch`，避开 Android 的 mixed-content / CORS 限制。
+* Android 构建会额外注入 `network_security_config.xml`（允许 loopback 明文）
+  与 `usesCleartextTraffic="true"`；内核启动失败时 launcher 会直接显示 IPC
+  返回的错误信息，便于真机排障。
 
 ## 3. 发现协议（UDP, NEBULA_V1）
 
