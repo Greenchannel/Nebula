@@ -128,7 +128,11 @@ jobs:
           java-version: "17"
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        # v3 defaults to installing the retired `tools` package, which makes
+        # sdkmanager exit 1; v4 fixes it and we pin the package list anyway.
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
       - name: Install Android platforms, build-tools and NDK
         run: |
