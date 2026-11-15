@@ -231,8 +231,29 @@ async fn nebula_three_node_cluster() {
     .await;
     assert_eq!(voice_msg["message"]["delivery_status"], "delivered");
 
+    // PDF documents travel through the same CAS path as other media.
+    let pdf = b"%PDF-1.4\n% Nebula e2e test document\n%%EOF\n".to_vec();
+    let pdf_sha = BlobStore::sha256_hex(&pdf);
+    let pdf_id = upload_blob(&a, &pdf, "application/pdf").await;
+    assert_eq!(pdf_id, pdf_sha);
+    let pdf_msg = send_message(
+        &a,
+        &b.peer_id(),
+        "pdf",
+        "nebula.pdf",
+        Some(&pdf_id),
+        Some(json!({
+            "file_name": "nebula.pdf",
+            "page_count": 1,
+            "mime_type": "application/pdf",
+            "size_bytes": pdf.len(),
+        })),
+    )
+    .await;
+    assert_eq!(pdf_msg["message"]["delivery_status"], "delivered");
+
     let conversation = nebula_core::conversation_id(&a.peer_id(), &b.peer_id());
-    let both_blobs_landed = wait_for(CONNECT_TIMEOUT, || async {
+    let all_blobs_landed = wait_for(CONNECT_TIMEOUT, || async {
         let present = |id: &str| {
             b.db.get_blob(id)
                 .ok()
@@ -240,15 +261,17 @@ async fn nebula_three_node_cluster() {
                 .map(|r| r.is_present)
                 .unwrap_or(false)
         };
-        present(&image_id) && present(&voice_id)
+        present(&image_id) && present(&voice_id) && present(&pdf_id)
     })
     .await;
-    assert!(both_blobs_landed, "Node B never finished CAS downloads");
+    assert!(all_blobs_landed, "Node B never finished CAS downloads");
 
     assert_eq!(b.blobs.read(&image_id).unwrap(), image, "image bytes must match");
     assert_eq!(b.blobs.read(&voice_id).unwrap(), voice, "voice bytes must match");
+    assert_eq!(b.blobs.read(&pdf_id).unwrap(), pdf, "pdf bytes must match");
     assert!(b.blobs.verify(&image_id).unwrap());
     assert!(b.blobs.verify(&voice_id).unwrap());
+    assert!(b.blobs.verify(&pdf_id).unwrap());
 
     let received = b.db.list_messages(&conversation, 50).unwrap();
     assert!(
@@ -258,6 +281,12 @@ async fn nebula_three_node_cluster() {
     assert!(
         received.iter().any(|m| m.blob_id.as_deref() == Some(&voice_id)),
         "voice message missing on B"
+    );
+    assert!(
+        received
+            .iter()
+            .any(|m| m.msg_type == "pdf" && m.blob_id.as_deref() == Some(&pdf_id)),
+        "pdf message missing on B"
     );
     println!(
         "✔ Step 2 CAS: image {} ({} B) and voice {} ({} B) verified on B",

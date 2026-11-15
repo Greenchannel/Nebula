@@ -185,7 +185,68 @@ impl DbPool {
             path: Arc::new(path),
         };
         pool.init_schema()?;
+        pool.migrate_messages_for_pdf()?;
         Ok(pool)
+    }
+
+    /// Older databases were created with `CHECK(msg_type IN ('text','image',
+    /// 'voice'))`. SQLite cannot alter a CHECK constraint in place, so rebuild
+    /// the table once while preserving every row.
+    fn migrate_messages_for_pdf(&self) -> Result<()> {
+        self.with_conn(|conn| {
+            let sql: Option<String> = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(sql) = sql else {
+                return Ok(());
+            };
+            if sql.contains("'pdf'") {
+                return Ok(());
+            }
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let result = conn.execute_batch(
+                r#"
+ALTER TABLE messages RENAME TO messages_legacy;
+CREATE TABLE messages (
+    msg_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    receiver_id TEXT NOT NULL,
+    msg_type TEXT NOT NULL CHECK(msg_type IN ('text', 'image', 'voice', 'pdf')),
+    content TEXT NOT NULL,
+    blob_id TEXT,
+    media_meta_json TEXT,
+    lamport_ts INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    delivery_status TEXT NOT NULL CHECK(delivery_status IN ('queued', 'sent', 'delivered'))
+);
+INSERT INTO messages (msg_id, conversation_id, sender_id, sender_name, receiver_id,
+    msg_type, content, blob_id, media_meta_json, lamport_ts, created_at, delivery_status)
+SELECT msg_id, conversation_id, sender_id, sender_name, receiver_id,
+    msg_type, content, blob_id, media_meta_json, lamport_ts, created_at, delivery_status
+FROM messages_legacy;
+DROP TABLE messages_legacy;
+CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, lamport_ts ASC, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_messages_queued ON messages(receiver_id, delivery_status) WHERE delivery_status = 'queued';
+"#,
+            );
+            match result {
+                Ok(()) => {
+                    conn.execute_batch("COMMIT")?;
+                    tracing::info!("migrated messages table to allow pdf msg_type");
+                    Ok(())
+                }
+                Err(err) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(err.into())
+                }
+            }
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -244,7 +305,7 @@ CREATE TABLE IF NOT EXISTS messages (
     sender_id TEXT NOT NULL,
     sender_name TEXT NOT NULL,
     receiver_id TEXT NOT NULL,
-    msg_type TEXT NOT NULL CHECK(msg_type IN ('text', 'image', 'voice')),
+    msg_type TEXT NOT NULL CHECK(msg_type IN ('text', 'image', 'voice', 'pdf')),
     content TEXT NOT NULL,
     blob_id TEXT,
     media_meta_json TEXT,
@@ -1004,4 +1065,80 @@ fn is_loopback_ip(ip: &str) -> bool {
 
 fn acc_short(peer_id: &str) -> String {
     peer_id.chars().take(4).collect::<String>().to_uppercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrates_legacy_messages_table_to_allow_pdf() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nebula.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                r#"
+CREATE TABLE messages (
+    msg_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    receiver_id TEXT NOT NULL,
+    msg_type TEXT NOT NULL CHECK(msg_type IN ('text', 'image', 'voice')),
+    content TEXT NOT NULL,
+    blob_id TEXT,
+    media_meta_json TEXT,
+    lamport_ts INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    delivery_status TEXT NOT NULL CHECK(delivery_status IN ('queued', 'sent', 'delivered'))
+);
+CREATE INDEX idx_messages_conv ON messages(conversation_id, lamport_ts ASC, created_at ASC);
+CREATE INDEX idx_messages_queued ON messages(receiver_id, delivery_status) WHERE delivery_status = 'queued';
+INSERT INTO messages VALUES
+    ('1', 'lobby', 'alice', 'Alice', 'lobby', 'text', 'hello', NULL, NULL, 1, 1000, 'delivered');
+"#,
+            )
+            .unwrap();
+        }
+
+        let pool = DbPool::open(&path).unwrap();
+        let legacy = pool.list_messages("lobby", 10).unwrap();
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].content, "hello");
+
+        let pdf = MessageRecord {
+            msg_id: "2".to_string(),
+            conversation_id: "lobby".to_string(),
+            sender_id: "alice".to_string(),
+            sender_name: "Alice".to_string(),
+            receiver_id: "lobby".to_string(),
+            msg_type: "pdf".to_string(),
+            content: "spec.pdf".to_string(),
+            blob_id: Some("a".repeat(64)),
+            media_meta_json: Some("{}".to_string()),
+            lamport_ts: 2,
+            created_at: 2000,
+            delivery_status: "queued".to_string(),
+        };
+        assert!(pool.insert_message(&pdf).unwrap());
+        let stored = pool.get_message("2").unwrap().unwrap();
+        assert_eq!(stored.msg_type, "pdf");
+
+        let schema: String = pool
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?)
+            })
+            .unwrap();
+        assert!(schema.contains("'pdf'"), "schema was not migrated: {schema}");
+
+        // Re-opening must be idempotent and preserve every row.
+        drop(pool);
+        let pool = DbPool::open(&path).unwrap();
+        assert_eq!(pool.list_messages("lobby", 10).unwrap().len(), 2);
+    }
 }

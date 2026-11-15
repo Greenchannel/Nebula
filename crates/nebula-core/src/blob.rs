@@ -145,6 +145,7 @@ pub fn guess_mime(name: &str) -> &'static str {
         "webm" => "audio/webm",
         "m4a" => "audio/mp4",
         "mp4" => "video/mp4",
+        "pdf" => "application/pdf",
         _ => "application/octet-stream",
     }
 }

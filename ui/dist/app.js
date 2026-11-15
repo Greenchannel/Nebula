@@ -102,6 +102,9 @@
     voiceGesture: null,
     audio: { el: null, id: null, btn: null },
     recordingTimer: null,
+    pdfLibPromise: null,
+    pdfViewer: null,
+    gallery: null,
   };
 
   const els = {};
@@ -292,6 +295,9 @@
       case 'BLOB_READY':
         state.blobRev += 1;
         state.presentBlobs.add(ev.blob_id);
+        if (state.pdfViewer && state.pdfViewer.blobId === ev.blob_id && !state.pdfViewer.doc) {
+          state.pdfViewer.reload?.();
+        }
         renderMessages();
         renderMoments();
         renderInspector();
@@ -468,6 +474,10 @@
     if (!msg) return '';
     if (msg.msg_type === 'image') return msg.content ? `[图片] ${msg.content}` : '[图片]';
     if (msg.msg_type === 'voice') return '[语音]';
+    if (msg.msg_type === 'pdf') {
+      const meta = parseMeta(msg.media_meta_json);
+      return `[PDF] ${meta.file_name || msg.content || '文档'}`;
+    }
     return msg.content || '';
   }
 
@@ -491,6 +501,25 @@
       <img class="full" src="${esc(blobUrl(blobId))}" alt="图片" loading="lazy">
       <div class="img-loader">拉取原图…</div>
     </div>`;
+  }
+
+  function pdfCardHtml(msg) {
+    const meta = parseMeta(msg.media_meta_json);
+    const thumb = thumbSrc(meta.thumb_b64);
+    const name = meta.file_name || msg.content || 'document.pdf';
+    const pages = Number(meta.page_count) || 0;
+    const size = Number(meta.size_bytes) || 0;
+    return `<button type="button" class="pdf-card" data-action="open-pdf"
+        data-blob-id="${esc(msg.blob_id)}" data-name="${esc(name)}" data-pages="${pages}">
+      <span class="pdf-thumb">${thumb
+        ? `<img src="${esc(thumb)}" alt="">`
+        : '<span class="pdf-glyph">PDF</span>'}</span>
+      <span class="pdf-info">
+        <strong>${esc(name)}</strong>
+        <small>PDF${pages ? ` · ${pages} 页` : ''}${size ? ` · ${esc(fmtBytes(size))}` : ''}</small>
+        <span class="pdf-open">点击阅读</span>
+      </span>
+    </button>`;
   }
 
   function voiceHtml(blobId, meta) {
@@ -523,7 +552,8 @@
     let body = '';
     if (msg.msg_type === 'image' && msg.blob_id) body += imageFrameHtml(msg.blob_id, msg.media_meta_json);
     if (msg.msg_type === 'voice' && msg.blob_id) body += voiceHtml(msg.blob_id, msg.media_meta_json);
-    if (msg.content) body += `<div class="msg-text">${esc(msg.content)}</div>`;
+    if (msg.msg_type === 'pdf' && msg.blob_id) body += pdfCardHtml(msg);
+    if (msg.content && msg.msg_type !== 'pdf') body += `<div class="msg-text">${esc(msg.content)}</div>`;
     const copyText = msg.content || (msg.msg_type === 'image' ? '[图片]' : '[语音]');
     return `<div class="msg-row ${mine ? 'mine' : ''}" data-msg-id="${esc(msg.msg_id)}">
       ${mine ? '' : `<span class="avatar msg-avatar" style="background:${esc(color)}">${esc(initial)}</span>`}
@@ -762,6 +792,8 @@
       } else if (file.type.startsWith('audio/')) {
         const ok = await sendAudioFile(file);
         if (ok) sent = true;
+      } else if (isPdfFile(file)) {
+        await sendPdfFile(file);
       } else {
         toast(`不支持的媒体类型: ${file.type || '未知'}`, 'warn');
       }
@@ -813,6 +845,106 @@
       };
       img.src = url;
     });
+  }
+
+  const isPdfFile = (file) => !!file
+    && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || ''));
+
+  function loadPdfJs() {
+    if (window.pdfjsLib) {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.min.js';
+      return Promise.resolve(window.pdfjsLib);
+    }
+    if (!state.pdfLibPromise) {
+      state.pdfLibPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = '/vendor/pdf.min.js';
+        script.onload = () => {
+          if (!window.pdfjsLib) {
+            reject(new Error('pdf.js 加载失败'));
+            return;
+          }
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.min.js';
+          resolve(window.pdfjsLib);
+        };
+        script.onerror = () => reject(new Error('pdf.js 加载失败'));
+        document.head.appendChild(script);
+      }).catch((err) => {
+        state.pdfLibPromise = null;
+        throw err;
+      });
+    }
+    return state.pdfLibPromise;
+  }
+
+  async function makePdfThumb(file) {
+    try {
+      const pdfjs = await loadPdfJs();
+      const data = new Uint8Array(await file.arrayBuffer());
+      const doc = await pdfjs.getDocument({
+        data,
+        cMapUrl: '/vendor/cmaps/',
+        cMapPacked: true,
+        standardFontDataUrl: '/vendor/standard_fonts/',
+      }).promise;
+      const page = await doc.getPage(1);
+      const base = page.getViewport({ scale: 1 });
+      const viewport = page.getViewport({ scale: Math.min(1, 96 / base.width) });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.ceil(viewport.width));
+      canvas.height = Math.max(1, Math.ceil(viewport.height));
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      let quality = 0.6;
+      let thumb_b64 = canvas.toDataURL('image/jpeg', quality);
+      while (thumb_b64.length > 4096 && quality > 0.25) {
+        quality -= 0.08;
+        thumb_b64 = canvas.toDataURL('image/jpeg', quality);
+      }
+      const result = {
+        thumb_b64,
+        width: Math.round(base.width),
+        height: Math.round(base.height),
+        page_count: doc.numPages || 1,
+      };
+      await doc.destroy();
+      return result;
+    } catch (err) {
+      console.warn('pdf thumbnail failed', err);
+      return null;
+    }
+  }
+
+  async function sendPdfFile(file) {
+    try {
+      const fileName = file.name || 'document.pdf';
+      const thumb = await makePdfThumb(file);
+      const up = await uploadRaw(file, 'application/pdf');
+      const mediaMeta = {
+        file_name: fileName,
+        mime_type: up.mime_type,
+        size_bytes: up.size_bytes,
+        page_count: thumb ? thumb.page_count : 0,
+      };
+      if (thumb) {
+        mediaMeta.thumb_b64 = thumb.thumb_b64;
+        mediaMeta.width = thumb.width;
+        mediaMeta.height = thumb.height;
+      }
+      await postMessage({
+        msg_type: 'pdf',
+        content: fileName,
+        blob_id: up.blob_id,
+        media_meta: mediaMeta,
+      });
+      toast('PDF 已发送', 'success');
+      return true;
+    } catch (err) {
+      toast(err.message, 'error');
+      return false;
+    }
   }
 
   function pseudoWaveform(seed) {
@@ -1507,21 +1639,360 @@
     return backdrop;
   }
 
-  function openLightbox(src, caption) {
+  // ------------------------------------------------------------------
+  // Image gallery (chat conversation / moment card / inspector media)
+  // ------------------------------------------------------------------
+  function openImageFromElement(frame) {
+    if (!frame) return;
+    const items = [];
+    let label = '图片';
+    let scope = null;
+    const momentCard = frame.closest('.moment-card');
+    if (momentCard) {
+      scope = momentCard;
+      label = '星云圈图片';
+    } else if (frame.closest('#messages')) {
+      scope = $('#messages');
+      label = '会话图片';
+    } else if (frame.closest('#inspector-body')) {
+      scope = frame.closest('.media-grid') || $('#inspector-body');
+      label = '共享媒体';
+    }
+    if (scope) {
+      $$('.image-frame', scope).forEach((el) => {
+        const src = el.dataset.src || ($('img.full', el)?.src) || '';
+        if (src) items.push({ src, blobId: el.dataset.blobId || '' });
+      });
+    }
+    const current = frame.dataset.src || ($('img.full', frame)?.src) || '';
+    if (!items.length && current) items.push({ src: current, blobId: frame.dataset.blobId || '' });
+    if (!items.length) return;
+    let index = items.findIndex((item) => item.src === current);
+    if (index < 0) index = 0;
+    openGallery(items, index, label);
+  }
+
+  function openGallery(items, index, label) {
+    if (!items.length) return;
+    closePdfViewer();
+    closeGallery();
     const div = document.createElement('div');
     div.className = 'lightbox';
     div.innerHTML = `
       <div class="lightbox-bar">
-        <span>${esc(caption || '图片预览')}</span>
-        <button type="button" class="icon-btn" data-action="close-lightbox">✕</button>
+        <span class="lightbox-label">${esc(label)}</span>
+        <span class="lightbox-counter"></span>
+        <span class="lightbox-spacer"></span>
+        <a class="lightbox-download" download>下载</a>
+        <button type="button" class="icon-btn" data-gallery="close" aria-label="关闭">✕</button>
       </div>
-      <div class="lightbox-body"><img src="${esc(src)}" alt="全屏图片"></div>`;
+      <button type="button" class="lightbox-nav prev" data-gallery="prev" aria-label="上一张">‹</button>
+      <button type="button" class="lightbox-nav next" data-gallery="next" aria-label="下一张">›</button>
+      <div class="lightbox-body"><img alt="图片"></div>`;
+    els.modalRoot.appendChild(div);
+
+    const img = $('.lightbox-body img', div);
+    const counter = $('.lightbox-counter', div);
+    const prev = $('[data-gallery="prev"]', div);
+    const next = $('[data-gallery="next"]', div);
+    const download = $('.lightbox-download', div);
+    const gallery = { items, index: clamp(index, 0, items.length - 1), el: div };
+    state.gallery = gallery;
+
+    gallery.render = () => {
+      const item = gallery.items[gallery.index];
+      img.src = item.src;
+      img.alt = `${label} ${gallery.index + 1}`;
+      counter.textContent = `${gallery.index + 1} / ${gallery.items.length}`;
+      prev.disabled = gallery.index <= 0;
+      next.disabled = gallery.index >= gallery.items.length - 1;
+      download.href = item.src;
+      [gallery.index - 1, gallery.index + 1].forEach((i) => {
+        const neighbour = gallery.items[i];
+        if (neighbour) {
+          const preload = new Image();
+          preload.src = neighbour.src;
+        }
+      });
+    };
+
+    const onKey = (ev) => {
+      if (!state.gallery) return;
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeGallery();
+      } else if (ev.key === 'ArrowLeft') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        moveGallery(-1);
+      } else if (ev.key === 'ArrowRight') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        moveGallery(1);
+      }
+    };
+    gallery.onKey = onKey;
+    document.addEventListener('keydown', onKey, true);
+
     div.addEventListener('click', (ev) => {
-      if (ev.target === div || ev.target.classList.contains('lightbox-body') || ev.target.dataset.action === 'close-lightbox') {
-        div.remove();
+      if (ev.target.closest('[data-gallery="close"]')) { closeGallery(); return; }
+      if (ev.target.closest('[data-gallery="prev"]')) { moveGallery(-1); return; }
+      if (ev.target.closest('[data-gallery="next"]')) { moveGallery(1); return; }
+      if (ev.target === div || ev.target.classList.contains('lightbox-body')) closeGallery();
+    });
+
+    let swipe = null;
+    const body = $('.lightbox-body', div);
+    body.addEventListener('pointerdown', (ev) => {
+      swipe = { x: ev.clientX, y: ev.clientY, id: ev.pointerId };
+    });
+    body.addEventListener('pointerup', (ev) => {
+      if (!swipe || ev.pointerId !== swipe.id) return;
+      const dx = ev.clientX - swipe.x;
+      const dy = ev.clientY - swipe.y;
+      swipe = null;
+      if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+        moveGallery(dx < 0 ? 1 : -1);
       }
     });
-    els.modalRoot.appendChild(div);
+
+    gallery.render();
+  }
+
+  function moveGallery(delta) {
+    const gallery = state.gallery;
+    if (!gallery) return;
+    const next = gallery.index + delta;
+    if (next < 0 || next >= gallery.items.length) return;
+    gallery.index = next;
+    gallery.render();
+  }
+
+  function closeGallery() {
+    const gallery = state.gallery;
+    if (!gallery) return;
+    state.gallery = null;
+    document.removeEventListener('keydown', gallery.onKey, true);
+    gallery.el.remove();
+  }
+
+  // ------------------------------------------------------------------
+  // PDF viewer (pdf.js, vendored under /vendor)
+  // ------------------------------------------------------------------
+  async function openPdfViewer(blobId, name, pagesHint) {
+    if (!blobId) return;
+    closeGallery();
+    closePdfViewer();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'pdf-viewer';
+    overlay.innerHTML = `
+      <div class="pdf-toolbar">
+        <button type="button" class="icon-btn" data-pdf="close" aria-label="关闭">✕</button>
+        <span class="pdf-title">${esc(name || 'document.pdf')}</span>
+        <div class="pdf-controls">
+          <button type="button" class="pdf-btn" data-pdf="prev" title="上一页">◀</button>
+          <input class="pdf-page-input" type="number" min="1" value="1" aria-label="页码">
+          <span class="pdf-page-count">/ <span class="pdf-total">${pagesHint || '?'}</span></span>
+          <button type="button" class="pdf-btn" data-pdf="next" title="下一页">▶</button>
+          <span class="pdf-sep"></span>
+          <button type="button" class="pdf-btn" data-pdf="zoom-out" title="缩小">−</button>
+          <button type="button" class="pdf-btn" data-pdf="zoom-fit" title="适应宽度">适应</button>
+          <button type="button" class="pdf-btn" data-pdf="zoom-in" title="放大">＋</button>
+          <a class="pdf-download" download="${esc(name || 'document.pdf')}" href="${esc(blobUrl(blobId))}">下载</a>
+        </div>
+      </div>
+      <div class="pdf-stage">
+        <div class="pdf-loading">正在解析 PDF…</div>
+        <canvas></canvas>
+      </div>`;
+    els.modalRoot.appendChild(overlay);
+
+    const viewer = {
+      el: overlay,
+      blobId,
+      name,
+      doc: null,
+      pages: 0,
+      page: 1,
+      zoom: 1,
+      generation: 0,
+      renderTask: null,
+      canvas: $('canvas', overlay),
+      stage: $('.pdf-stage', overlay),
+      loading: $('.pdf-loading', overlay),
+      pageInput: $('.pdf-page-input', overlay),
+      totalEl: $('.pdf-total', overlay),
+      prevBtn: $('[data-pdf="prev"]', overlay),
+      nextBtn: $('[data-pdf="next"]', overlay),
+    };
+    state.pdfViewer = viewer;
+
+    const onKey = (ev) => {
+      const current = state.pdfViewer;
+      if (!current) return;
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closePdfViewer();
+      } else if (ev.key === 'ArrowLeft') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        renderPdfPage(current.page - 1);
+      } else if (ev.key === 'ArrowRight') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        renderPdfPage(current.page + 1);
+      } else if (ev.key === '+' || ev.key === '=') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        pdfZoom(1.2);
+      } else if (ev.key === '-') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        pdfZoom(1 / 1.2);
+      }
+    };
+    viewer.onKey = onKey;
+    document.addEventListener('keydown', onKey, true);
+
+    overlay.addEventListener('click', (ev) => {
+      const button = ev.target.closest('[data-pdf]');
+      if (!button) return;
+      const action = button.dataset.pdf;
+      if (action === 'close') closePdfViewer();
+      else if (action === 'prev') renderPdfPage(viewer.page - 1);
+      else if (action === 'next') renderPdfPage(viewer.page + 1);
+      else if (action === 'zoom-in') pdfZoom(1.2);
+      else if (action === 'zoom-out') pdfZoom(1 / 1.2);
+      else if (action === 'zoom-fit') { viewer.zoom = 1; renderPdfPage(viewer.page); }
+      else if (action === 'retry') loadPdf();
+    });
+    viewer.pageInput.addEventListener('change', () => {
+      renderPdfPage(Number(viewer.pageInput.value) || 1);
+    });
+    viewer.pageInput.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        renderPdfPage(Number(viewer.pageInput.value) || 1);
+      }
+    });
+
+    let swipe = null;
+    viewer.stage.addEventListener('pointerdown', (ev) => {
+      swipe = { x: ev.clientX, y: ev.clientY, id: ev.pointerId };
+    });
+    viewer.stage.addEventListener('pointerup', (ev) => {
+      if (!swipe || ev.pointerId !== swipe.id) return;
+      const dx = ev.clientX - swipe.x;
+      const dy = ev.clientY - swipe.y;
+      swipe = null;
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+        renderPdfPage(viewer.page + (dx < 0 ? 1 : -1));
+      }
+    });
+
+    const onResize = () => {
+      if (state.pdfViewer !== viewer || !viewer.doc) return;
+      clearTimeout(viewer.resizeTimer);
+      viewer.resizeTimer = setTimeout(() => renderPdfPage(viewer.page), 180);
+    };
+    viewer.onResize = onResize;
+    window.addEventListener('resize', onResize);
+
+    async function loadPdf() {
+      try {
+        viewer.loading.classList.remove('hidden');
+        viewer.loading.textContent = '正在解析 PDF…';
+        const pdfjs = await loadPdfJs();
+        if (state.pdfViewer !== viewer) return;
+        const doc = await pdfjs.getDocument({
+          url: blobUrl(blobId),
+          cMapUrl: '/vendor/cmaps/',
+          cMapPacked: true,
+          standardFontDataUrl: '/vendor/standard_fonts/',
+        }).promise;
+        if (state.pdfViewer !== viewer) {
+          await doc.destroy();
+          return;
+        }
+        viewer.doc = doc;
+        viewer.pages = doc.numPages || 1;
+        viewer.totalEl.textContent = String(viewer.pages);
+        viewer.pageInput.max = String(viewer.pages);
+        await renderPdfPage(1);
+      } catch (err) {
+        console.warn('pdf open failed', err);
+        if (state.pdfViewer !== viewer) return;
+        viewer.loading.classList.remove('hidden');
+        viewer.loading.innerHTML = '无法读取 PDF（可能尚未下载完成）<br>'
+          + '<button type="button" class="pdf-btn" data-pdf="retry">重试</button>';
+      }
+    }
+    viewer.reload = loadPdf;
+    loadPdf();
+  }
+
+  function pdfZoom(factor) {
+    const viewer = state.pdfViewer;
+    if (!viewer) return;
+    viewer.zoom = clamp(viewer.zoom * factor, 0.5, 4);
+    renderPdfPage(viewer.page);
+  }
+
+  async function renderPdfPage(pageNumber) {
+    const viewer = state.pdfViewer;
+    if (!viewer || !viewer.doc) return;
+    const target = clamp(Number(pageNumber) || 1, 1, viewer.pages);
+    viewer.page = target;
+    viewer.pageInput.value = String(target);
+    viewer.prevBtn.disabled = target <= 1;
+    viewer.nextBtn.disabled = target >= viewer.pages;
+    const generation = ++viewer.generation;
+    if (viewer.renderTask) {
+      try { viewer.renderTask.cancel(); } catch (_) { /* ignore */ }
+      viewer.renderTask = null;
+    }
+    try {
+      const page = await viewer.doc.getPage(target);
+      if (state.pdfViewer !== viewer || generation !== viewer.generation) return;
+      const base = page.getViewport({ scale: 1 });
+      const available = Math.max(240, viewer.stage.clientWidth - 28);
+      const scale = (available / base.width) * viewer.zoom;
+      const viewport = page.getViewport({ scale });
+      const ratio = window.devicePixelRatio || 1;
+      const canvas = viewer.canvas;
+      canvas.width = Math.floor(viewport.width * ratio);
+      canvas.height = Math.floor(viewport.height * ratio);
+      canvas.style.width = `${Math.floor(viewport.width)}px`;
+      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      viewer.loading.classList.add('hidden');
+      viewer.renderTask = page.render({ canvasContext: ctx, viewport });
+      await viewer.renderTask.promise;
+      viewer.renderTask = null;
+    } catch (err) {
+      if (err && err.name === 'RenderingCancelledException') return;
+      console.warn('pdf render failed', err);
+    }
+  }
+
+  function closePdfViewer() {
+    const viewer = state.pdfViewer;
+    if (!viewer) return;
+    state.pdfViewer = null;
+    document.removeEventListener('keydown', viewer.onKey, true);
+    window.removeEventListener('resize', viewer.onResize);
+    clearTimeout(viewer.resizeTimer);
+    if (viewer.renderTask) {
+      try { viewer.renderTask.cancel(); } catch (_) { /* ignore */ }
+    }
+    if (viewer.doc) {
+      try { viewer.doc.destroy(); } catch (_) { /* ignore */ }
+    }
+    viewer.el.remove();
   }
 
   function openAttachSheet() {
@@ -1534,6 +2005,7 @@
     sheet.innerHTML = `<div class="sheet">
       <div class="sheet-title">发送到当前会话</div>
       <button type="button" class="sheet-item" data-action="pick-images">🖼️ 图片</button>
+      <button type="button" class="sheet-item" data-action="pick-pdf">📄 PDF 文件</button>
       <button type="button" class="sheet-item" data-action="pick-audio">🎵 音频文件</button>
       <button type="button" class="sheet-item" data-action="pick-voice-file">🎙️ 选择语音文件</button>
       <button type="button" class="sheet-item sheet-cancel" data-action="close-sheet">取消</button>
@@ -1545,6 +2017,7 @@
         return;
       }
       if (target.dataset.action === 'pick-images') { els.fileInput.accept = 'image/*'; els.fileInput.click(); }
+      if (target.dataset.action === 'pick-pdf') { els.fileInput.accept = 'application/pdf'; els.fileInput.click(); }
       if (target.dataset.action === 'pick-audio' || target.dataset.action === 'pick-voice-file') {
         els.voiceFileInput.click();
       }
@@ -1830,13 +2303,6 @@
       }
     }, true);
 
-    els.messages.addEventListener('click', (ev) => {
-      const image = ev.target.closest('[data-action="lightbox"]');
-      if (image) {
-        openLightbox(image.dataset.src, 'Nebula · 图片');
-      }
-    });
-
     els.input.addEventListener('input', () => {
       state.drafts.set(state.currentConversation, els.input.value);
       autoGrowInput();
@@ -1855,7 +2321,7 @@
     els.fileInput.addEventListener('change', async () => {
       const files = Array.from(els.fileInput.files || []);
       els.fileInput.value = '';
-      els.fileInput.accept = 'image/*,audio/*';
+      els.fileInput.accept = 'image/*,audio/*,application/pdf';
       await handleFiles(files);
     });
     els.voiceFileInput.addEventListener('change', async () => {
@@ -1994,7 +2460,14 @@
       const action = target.dataset.action;
       switch (action) {
         case 'lightbox':
-          openLightbox(target.dataset.src, 'Nebula · 图片');
+          openImageFromElement(target);
+          break;
+        case 'open-pdf':
+          openPdfViewer(
+            target.dataset.blobId,
+            target.dataset.name || 'document.pdf',
+            Number(target.dataset.pages) || 0,
+          );
           break;
         case 'copy-msg':
           copyText(target.dataset.text || '');
@@ -2027,9 +2500,6 @@
             renderMomentDraft();
           }
           break;
-        case 'close-lightbox':
-          target.closest('.lightbox')?.remove();
-          break;
         case 'close-sheet':
           target.closest('.sheet-backdrop')?.remove();
           break;
@@ -2044,6 +2514,8 @@
 
     document.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape') {
+        if (state.gallery) { closeGallery(); return; }
+        if (state.pdfViewer) { closePdfViewer(); return; }
         const lightbox = $$('.lightbox').pop();
         if (lightbox) { lightbox.remove(); return; }
         const backdrop = $$('.modal-backdrop').pop();

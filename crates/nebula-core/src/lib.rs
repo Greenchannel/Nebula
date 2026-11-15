@@ -332,7 +332,7 @@ impl NebulaNode {
         let identity = self.identity();
         let receiver = resolve_receiver(&req, &identity.peer_id)?;
         let msg_type = req.msg_type.unwrap_or_else(|| "text".to_string());
-        if !matches!(msg_type.as_str(), "text" | "image" | "voice") {
+        if !matches!(msg_type.as_str(), "text" | "image" | "voice" | "pdf") {
             return Err(anyhow!("invalid msg_type: {msg_type}"));
         }
         let blob_id = req.blob_id.filter(|b| !b.is_empty());

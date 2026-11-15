@@ -66,7 +66,12 @@ IPv4 接口的定向 `/24` 广播、`127.0.0.1:48600..=48609`。
 ## 4. 数据模型（SQLite）
 
 `identity / peers / blobs / messages / moment_events` 五张表，见 `db.rs`。
-* `messages.media_meta_json` 只保存元数据（缩略图 data URL、宽高、时长、16 段波形）。
+* `messages.msg_type` 支持 `text | image | voice | pdf`；旧库在启动时自动重建
+  `messages` 表完成 CHECK 约束迁移（保留全部行）。
+* `messages.media_meta_json` 只保存元数据（缩略图 data URL、宽高、时长、16 段波形、
+  PDF 文件名/页数）。
+* PDF 原文件与其他媒体一样进入 CAS；`ui/dist/vendor` 下的 pdf.js / CMaps /
+  标准字体由 `nebula-core/build.rs` 编译期嵌入，并由 `/vendor/*` 提供。
 * `moments` 使用确定性 ID：`{lamport:016}-{peer_id}-{rand:08x}`，`INSERT OR IGNORE`，
   仅 `rows_affected > 0` 时才触发再次传染（防广播风暴）。
 * 会话 ID：大厅 `lobby`；私聊 `min(peerA,peerB):max(peerA,peerB)`。
@@ -100,6 +105,8 @@ IPv4 接口的定向 `/24` 广播、`127.0.0.1:48600..=48609`。
 * 断点：手机 `<768`（底部导航 + 推拉栈）、平板 `768–1279`（64px 导航轨 +
   双栏 + 右侧抽屉 + 双列动态）、桌面 `>=1280`（72/320/flex/300 四区）。
 * 草稿、录音状态、当前会话在任意旋转/缩放中保持（Composer 永不重建）。
+* PDF 阅读器：pdf.js 渲染 page 1..N，支持翻页/跳页/缩放/下载；失败时提示并可在
+  `BLOB_READY` 后重试。图片灯箱支持左右切换，作用域限定当前会话 / 单条动态 / 当前媒体网格。
 * TUI：宽度 `>=100` 三栏，`<100` 单栏 + `F1/F2/F3`；键位见 `nebula-tui/src/lib.rs`。
 
 ## 8. 已知取舍

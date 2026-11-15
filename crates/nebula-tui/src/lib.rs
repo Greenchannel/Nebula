@@ -354,19 +354,21 @@ impl TuiApp {
                 return;
             }
         };
+        let is_pdf = mime == "application/pdf";
         let file_name = std::path::Path::new(path)
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("image")
+            .unwrap_or(if is_pdf { "document.pdf" } else { "image" })
             .to_string();
         let request = SendMessageRequest {
             conversation_id: Some(self.selected_conv.clone()),
-            msg_type: Some("image".to_string()),
-            content: Some(file_name),
+            msg_type: Some(if is_pdf { "pdf" } else { "image" }.to_string()),
+            content: Some(file_name.clone()),
             blob_id: Some(blob_id),
             media_meta: Some(json!({
                 "mime_type": mime,
                 "size_bytes": size,
+                "file_name": file_name,
                 "width": 0,
                 "height": 0
             })),
@@ -376,12 +378,16 @@ impl TuiApp {
             Ok(message) => {
                 self.auto_scroll = true;
                 self.set_status(format!(
-                    "图片已通过 CAS 发送 ({}, {})",
+                    "{}已通过 CAS 发送 ({}, {})",
+                    if is_pdf { "PDF" } else { "图片" },
                     fmt_bytes(size as i64),
                     delivery_label(&message.delivery_status)
                 ));
             }
-            Err(err) => self.set_status(format!("图片发送失败: {err:#}")),
+            Err(err) => self.set_status(format!(
+                "{}发送失败: {err:#}",
+                if is_pdf { "PDF" } else { "图片" }
+            )),
         }
     }
 
@@ -866,6 +872,10 @@ impl TuiApp {
                     format!("[图片] {}", message.content),
                     Style::default().fg(MUTED),
                 )),
+                "pdf" => spans.push(Span::styled(
+                    format!("[PDF] {}", message.content),
+                    Style::default().fg(Color::Rgb(248, 113, 113)),
+                )),
                 "voice" => {
                     let meta = parse_meta(message.media_meta_json.as_deref());
                     let duration = meta
@@ -1212,6 +1222,7 @@ fn short_id(id: &str) -> String {
 fn message_preview(message: &MessageRecord) -> String {
     match message.msg_type.as_str() {
         "image" => format!("[图片] {}", message.content),
+        "pdf" => format!("[PDF] {}", message.content),
         "voice" => "[语音]".to_string(),
         _ => message.content.clone(),
     }
@@ -1534,6 +1545,19 @@ mod tests {
         assert!(
             app.messages.iter().any(|m| m.msg_type == "image"),
             "image message never stored"
+        );
+
+        // Send a local PDF path (TUI only tags it; the reader lives in the GUI).
+        let pdf_path = dir.path().join("nebula-test.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4\n% tui test pdf\n").unwrap();
+        app.handle_key(key(KeyCode::Char('p'))).await.unwrap();
+        for event in type_text(&pdf_path.display().to_string()) {
+            app.handle_key(event).await.unwrap();
+        }
+        app.handle_key(key(KeyCode::Enter)).await.unwrap();
+        assert!(
+            app.messages.iter().any(|m| m.msg_type == "pdf"),
+            "pdf message never stored"
         );
 
         // Publish + like a moment.
